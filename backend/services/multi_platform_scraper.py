@@ -52,6 +52,21 @@ COMMON_HEADERS = {
 class RedditScraper:
     BASE_URL = "https://www.reddit.com/search.json"
 
+    STOPWORDS = {
+        "a", "an", "the", "for", "to", "of", "and", "or", "in", "on", "with",
+        "best", "need", "looking", "recommend", "recommendation", "software",
+        "tool", "tools", "platform", "solution", "solutions",
+    }
+
+    def _keyword_tokens(self, keyword: str) -> List[str]:
+        tokens = re.findall(r"[a-z0-9]+", (keyword or "").lower())
+        filtered = [t for t in tokens if t not in self.STOPWORDS and len(t) > 1]
+        return filtered or [t for t in tokens if len(t) > 1]
+
+    def _build_query(self, keyword: str) -> str:
+        tokens = self._keyword_tokens(keyword)
+        return " ".join(tokens[:4]) if tokens else keyword
+
     def _matches_keywords(self, text: str, keywords: List[str]) -> List[str]:
         normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
         matched: List[str] = []
@@ -59,13 +74,17 @@ class RedditScraper:
             kw_norm = re.sub(r"\s+", " ", (kw or "").lower()).strip()
             if not kw_norm:
                 continue
-            tokens = [t for t in re.split(r"\s+", kw_norm) if t]
-            if tokens and all(t in normalized for t in tokens):
+            tokens = self._keyword_tokens(kw_norm)
+            if not tokens:
+                continue
+            hits = sum(1 for t in tokens if t in normalized)
+            min_hits = 1 if len(tokens) == 1 else 2 if len(tokens) <= 3 else max(2, len(tokens) - 1)
+            if hits >= min_hits:
                 matched.append(kw)
         return matched
 
     async def _fetch_keyword(self, client: httpx.AsyncClient, keyword: str, all_kws: List[str], limit: int) -> List[Dict]:
-        params = {"q": keyword, "sort": "new", "limit": limit}
+        params = {"q": self._build_query(keyword), "sort": "new", "limit": limit}
         try:
             r = await client.get(self.BASE_URL, params=params, timeout=10,
                                  headers={"User-Agent": "SocialPipe/1.0"})
@@ -126,9 +145,16 @@ NITTER_INSTANCES = [
 ]
 
 class TwitterScraper:
+    def _keyword_tokens(self, keyword: str) -> List[str]:
+        tokens = re.findall(r"[a-z0-9]+", (keyword or "").lower())
+        stopwords = {"a", "an", "the", "for", "to", "of", "and", "or", "in", "on", "with", "best", "need", "looking", "recommend"}
+        filtered = [t for t in tokens if t not in stopwords and len(t) > 1]
+        return filtered or [t for t in tokens if len(t) > 1]
+
     def _build_query(self, keyword: str) -> str:
         """Build a sales-intent enriched query for better signal quality."""
-        return f"{keyword} (looking OR need OR recommend OR alternative OR switching OR replacing OR expensive)"
+        base = " ".join(self._keyword_tokens(keyword)[:4]) or keyword
+        return f"{base} (looking OR need OR recommend OR alternative OR switching OR replacing OR expensive)"
 
     def _parse_nitter_html(self, html: str, keyword: str, base_url: str) -> List[Dict]:
         results = []
@@ -179,7 +205,7 @@ class TwitterScraper:
             try:
                 url = f"{instance}/search"
                 params = {"q": query, "f": "tweets"}
-                r = await client.get(url, params=params, timeout=10, headers=COMMON_HEADERS, verify=False)
+                r = await client.get(url, params=params, timeout=10, headers=COMMON_HEADERS)
                 if r.status_code == 200 and "tweet" in r.text.lower():
                     results = self._parse_nitter_html(r.text, keyword, instance)
                     if results:
@@ -191,7 +217,7 @@ class TwitterScraper:
         return []
 
     async def fetch_posts(self, keywords: List[str], limit: int = 8) -> List[Dict]:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True, verify=False) as client:
             batches = await asyncio.gather(
                 *[self._search_nitter(client, kw) for kw in keywords],
                 return_exceptions=True
@@ -217,7 +243,11 @@ class GoogleSiteScraper:
 
     def _build_query(self, keyword: str) -> str:
         """Enrich keyword with sales-intent terms for better results."""
-        return f'site:{self.SITE} "{keyword}" (looking OR recommend OR alternative OR switching OR need OR best)'
+        tokens = re.findall(r"[a-z0-9]+", (keyword or "").lower())
+        stopwords = {"a", "an", "the", "for", "to", "of", "and", "or", "in", "on", "with", "best", "need", "looking", "recommend"}
+        filtered = [t for t in tokens if t not in stopwords and len(t) > 1]
+        base = " ".join((filtered or tokens)[:5]) or keyword
+        return f"site:{self.SITE} {base} (looking OR recommend OR alternative OR switching OR need)"
 
     def _stable_id(self, url: str) -> str:
         return f"{self.PLATFORM.lower()}_{hashlib.md5(url.encode()).hexdigest()[:12]}"
@@ -407,7 +437,11 @@ class FacebookScraper(DuckDuckGoSiteScraper):
 
     def _build_query(self, keyword: str) -> str:
         # Facebook public group posts are better surfaced this way
-        return f'site:facebook.com/groups "{keyword}" (looking OR recommend OR alternative OR need OR best)'
+        tokens = re.findall(r"[a-z0-9]+", (keyword or "").lower())
+        stopwords = {"a", "an", "the", "for", "to", "of", "and", "or", "in", "on", "with", "best", "need", "looking", "recommend"}
+        filtered = [t for t in tokens if t not in stopwords and len(t) > 1]
+        base = " ".join((filtered or tokens)[:5]) or keyword
+        return f"site:facebook.com/groups {base} (looking OR recommend OR alternative OR need)"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -420,24 +454,36 @@ class MultiPlatformScraper:
         self.linkedin = LinkedInScraper()
         self.facebook = FacebookScraper()
 
-    async def fetch_all(self, keywords: List[str], limit_per_platform: int = 8) -> List[Dict]:
+    async def fetch_all(self, keywords: List[str], limit_per_platform: int = 8, platforms: Optional[List[str]] = None) -> List[Dict]:
         """
         Run all 4 platform scrapers concurrently.
         Returns merged, deduplicated list sorted by platform.
         """
-        print(f"[MultiScraper] Scanning {len(keywords)} keyword(s) across Reddit, X, LinkedIn, Facebook…")
+        selected = {p.lower() for p in (platforms or ["reddit", "x", "linkedin", "facebook"])}
+        print(f"[MultiScraper] Scanning {len(keywords)} keyword(s) across: {', '.join(sorted(selected))}")
 
-        results_by_platform = await asyncio.gather(
-            self.reddit.fetch_posts(keywords, limit=limit_per_platform),
-            self.twitter.fetch_posts(keywords, limit=limit_per_platform),
-            self.linkedin.fetch_posts(keywords, limit=limit_per_platform),
-            self.facebook.fetch_posts(keywords, limit=limit_per_platform),
-            return_exceptions=True
-        )
+        jobs = []
+        labels = []
+        if "reddit" in selected:
+            jobs.append(self.reddit.fetch_posts(keywords, limit=limit_per_platform))
+            labels.append("Reddit")
+        if "x" in selected or "twitter" in selected:
+            jobs.append(self.twitter.fetch_posts(keywords, limit=limit_per_platform))
+            labels.append("X")
+        if "linkedin" in selected:
+            jobs.append(self.linkedin.fetch_posts(keywords, limit=limit_per_platform))
+            labels.append("LinkedIn")
+        if "facebook" in selected or "fb" in selected:
+            jobs.append(self.facebook.fetch_posts(keywords, limit=limit_per_platform))
+            labels.append("Facebook")
+
+        if not jobs:
+            return []
+
+        results_by_platform = await asyncio.gather(*jobs, return_exceptions=True)
 
         seen: set = set()
         all_posts: List[Dict] = []
-        labels = ["Reddit", "X", "LinkedIn", "Facebook"]
         for label, batch in zip(labels, results_by_platform):
             if isinstance(batch, Exception):
                 print(f"[{label}] Scraper error: {batch}")

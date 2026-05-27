@@ -32,13 +32,64 @@ const SIGNAL_LABELS = {
   no_signal:         'No Signal',
 };
 
+const SUGGESTION_TEMPLATES = [
+  (base) => `we need help with ${base}`,
+  (base) => `struggling with ${base} in our sales team`,
+  (base) => `need to replace our ${base}`,
+  (base) => `${base} is too expensive for our team`,
+  (base) => `looking for a better way to manage ${base}`,
+  (base) => `our current ${base} is not working`,
+];
+
+const getKeywordSuggestions = (input) => {
+  const raw = (input || '').split(',').pop()?.trim().toLowerCase() || '';
+  if (!raw) {
+    return [
+      'we need help with crm',
+      'struggling with sales calls for our team',
+      'our current crm is too expensive',
+      'looking for a better way to manage leads',
+    ];
+  }
+
+  const normalized = raw.replace(/^looking for\s+|^need\s+|^best\s+|^recommend\s+/i, '').trim();
+  const base = normalized || raw;
+  return SUGGESTION_TEMPLATES.map((build) => build(base))
+    .filter((v, i, arr) => v && arr.indexOf(v) === i && v !== raw)
+    .slice(0, 4);
+};
+
+const parseKeywords = (value) => {
+  const seen = new Set();
+  return (value || '')
+    .split(',')
+    .map((k) => k.trim())
+    .filter(Boolean)
+    .filter((k) => {
+      const key = k.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+
+const mergeUniqueById = (incoming, existing) => {
+  const map = new Map();
+  [...incoming, ...existing].forEach((l) => {
+    if (l?.id) map.set(l.id, l);
+  });
+  return Array.from(map.values());
+};
+
 /* ── KPI Card ────────────────────────────────────────── */
-function KpiCard({ label, value, icon: Icon, accent }) {
+function KpiCard({ label, value, icon: Icon, accent, tooltip }) {
   return (
     <div
       id={`kpi-${label.toLowerCase().replace(/\s/g, '-')}`}
-      className="bg-white rounded-xl p-5 flex items-center gap-4 w-full"
+      className="bg-white rounded-xl p-5 flex items-center gap-4 w-full relative group"
       style={{ border: '1px solid #e2e8f0' }}
+      title={tooltip || undefined}
+      aria-label={tooltip || label}
     >
       <div
         className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
@@ -50,17 +101,40 @@ function KpiCard({ label, value, icon: Icon, accent }) {
         <p className="text-xs sm:text-sm font-medium text-slate-500 truncate">{label}</p>
         <p className="text-3xl sm:text-4xl font-bold text-slate-900 leading-tight">{value}</p>
       </div>
+
+      {tooltip && (
+        <div
+          role="tooltip"
+          className="pointer-events-none absolute left-3 right-3 -bottom-2 translate-y-full opacity-0 group-hover:opacity-100 transition-opacity"
+          style={{ zIndex: 20 }}
+        >
+          <div
+            className="rounded-lg px-3 py-2 text-xs text-white shadow-lg"
+            style={{ background: '#0f172a' }}
+          >
+            {tooltip}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 /* ── Lead Feed Card ──────────────────────────────────── */
-function LeadFeedCard({ lead }) {
+function LeadFeedCard({ lead, onDismiss }) {
   const sourceUrl = lead.source_url || lead.url;
   const lvl = getLevel(lead.score ?? 0);
   const signal = SIGNAL_LABELS[lead.signal_type] || lead.signal_type || '—';
   const tsLabel = lead.timestamp ? new Date(Number(lead.timestamp) * 1000).toLocaleString() : null;
   const primaryText = lead.content || lead.pain_point || '—';
+  const platformLabel = (lead.platform || 'Social').trim() || 'Social';
+  const authorLabel = lead.author
+    ? (platformLabel.toLowerCase() === 'reddit' ? `u/${lead.author}` : lead.author)
+    : null;
+  const sourceHost = sourceUrl ? new URL(sourceUrl).hostname.replace(/^www\./, '') : null;
+  const fitReason = lead.pain_point
+    ? `Possible lead because this post shows a pain point: ${lead.pain_point}`
+    : 'Possible lead because the post matched your keyword and buyer-intent filters.';
 
   return (
     <div
@@ -69,7 +143,7 @@ function LeadFeedCard({ lead }) {
     >
       <div className="flex items-center justify-between mb-2.5">
         <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-          {lead.platform || 'Reddit'}
+          {platformLabel}
         </span>
         <span
           className="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full"
@@ -84,8 +158,8 @@ function LeadFeedCard({ lead }) {
 
       {(lead.author || tsLabel) && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400 mb-2">
-          {lead.author && <span className="truncate">u/{lead.author}</span>}
-          {lead.author && tsLabel && <span>•</span>}
+          {authorLabel && <span className="truncate">{authorLabel}</span>}
+          {authorLabel && tsLabel && <span>•</span>}
           {tsLabel && <span className="truncate">{tsLabel}</span>}
         </div>
       )}
@@ -94,6 +168,15 @@ function LeadFeedCard({ lead }) {
         {primaryText}
       </p>
 
+      <p className="text-xs text-emerald-600 mb-3">
+        {fitReason}
+      </p>
+
+      <div className="mb-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500" style={{ border: '1px solid #e2e8f0' }}>
+        <div><span className="font-semibold text-slate-700">Source:</span> {platformLabel}</div>
+        <div><span className="font-semibold text-slate-700">Matched From:</span> {sourceHost || `${platformLabel} public post search`}</div>
+      </div>
+
       {lead.analysis_error && (
         <p className="text-xs text-rose-500 mb-3 line-clamp-2">
           AI: {lead.analysis_error}
@@ -101,16 +184,26 @@ function LeadFeedCard({ lead }) {
       )}
 
       {sourceUrl ? (
-        <a
-          href={sourceUrl}
-          target="_blank"
-          rel="noreferrer"
-          id={`lead-view-${lead.id}`}
-          className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg text-sm font-semibold text-blue-600 transition-colors hover:bg-blue-50"
-          style={{ border: '1px solid #bfdbfe' }}
-        >
-          View Post <ExternalLink size={14} />
-        </a>
+        <div className="flex gap-2">
+          <a
+            href={sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            id={`lead-view-${lead.id}`}
+            className="flex items-center justify-center gap-2 w-full py-2.5 rounded-lg text-sm font-semibold text-blue-600 transition-colors hover:bg-blue-50"
+            style={{ border: '1px solid #bfdbfe' }}
+          >
+            View Post <ExternalLink size={14} />
+          </a>
+          <button
+            type="button"
+            onClick={() => onDismiss?.(lead.id)}
+            className="px-3 py-2.5 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+            style={{ border: '1px solid #e2e8f0' }}
+          >
+            Not a Fit
+          </button>
+        </div>
       ) : (
         <div
           className="flex items-center justify-center w-full py-2.5 rounded-lg text-sm text-slate-300 cursor-not-allowed"
@@ -130,8 +223,17 @@ const Dashboard = () => {
   const [logs, setLogs]             = useState([]);
   const [leads, setLeads]           = useState([]);
   const [analytics, setAnalytics]   = useState({ total_leads: 0, hot_count: 0, warm_count: 0, pushed_count: 0 });
+  const keywordSuggestions = getKeywordSuggestions(keywords);
 
-  useEffect(() => { fetchAnalytics(); fetchRecentLeads(); }, []);
+  useEffect(() => {
+    fetchAnalytics();
+    fetchRecentLeads();
+    const t = setInterval(() => {
+      fetchAnalytics();
+      fetchRecentLeads();
+    }, 15000);
+    return () => clearInterval(t);
+  }, []);
 
   const fetchAnalytics = async () => {
     try {
@@ -153,19 +255,29 @@ const Dashboard = () => {
     } catch (e) { console.error(e); }
   };
 
+  const dismissLead = async (leadId) => {
+    try {
+      await axios.delete(`${API_BASE_URL}/api/leads/${leadId}`);
+      setLeads(p => p.filter(l => l.id !== leadId));
+      fetchAnalytics();
+    } catch (e) { console.error(e); }
+  };
+
   const runScan = async () => {
     if (!keywords.trim()) return;
-    const kwList = keywords.split(',').map(k => k.trim()).filter(Boolean);
+    const kwList = parseKeywords(keywords);
     setIsScanning(true);
     setLogs([]);
     kwList.forEach((kw, i) =>
       setTimeout(() => setLogs(p => [...p, `Scanning for: "${kw}"…`]), i * 800)
     );
     try {
-      const r = await axios.post(`${API_BASE_URL}/api/scan`, { keywords: kwList });
+      const r = await axios.post(`${API_BASE_URL}/api/scan`, {
+        keywords: kwList,
+      });
       setTimeout(() => {
         setLogs(p => [...p, `✓ Found ${r.data.length} leads — scoring complete.`]);
-        setLeads(p => [...r.data, ...p].slice(0, 10));
+        setLeads(r.data.slice(0, 10));
         fetchAnalytics();
         setIsScanning(false);
       }, kwList.length * 800 + 500);
@@ -175,11 +287,46 @@ const Dashboard = () => {
     }
   };
 
+  const applySuggestion = (suggestion) => {
+    const parts = parseKeywords(keywords);
+    if (parts.length <= 1) {
+      setKeywords(suggestion);
+      return;
+    }
+    parts[parts.length - 1] = suggestion;
+    setKeywords(parseKeywords(parts.join(', ')).join(', '));
+  };
+
   const kpis = [
-    { label: 'Total Leads', value: analytics.total_leads, icon: Users,       accent: '#6366f1' },
-    { label: 'Hot Leads',   value: analytics.hot_count,   icon: Flame,       accent: '#ef4444' },
-    { label: 'Warm Leads',  value: analytics.warm_count,  icon: Thermometer, accent: '#f97316' },
-    { label: 'In Pipeline', value: analytics.pushed_count, icon: Send,       accent: '#10b981' },
+    {
+      label: 'Total Leads',
+      value: analytics.total_leads,
+      icon: Users,
+      accent: '#6366f1',
+      tooltip: 'Total AI-qualified leads found across platforms (score ≥ 50). This count excludes noise/irrelevant posts (No Signal) and anything discarded.',
+      tooltip: 'Total AI-qualified Reddit leads found (score >= 50). This count excludes noise, irrelevant posts, and anything discarded.',
+    },
+    {
+      label: 'Hot Leads',
+      value: analytics.hot_count,
+      icon: Flame,
+      accent: '#ef4444',
+      tooltip: 'Score 90–100. Strong buying intent right now. Typical examples: “Need a CRM ASAP”, “We’re switching from HubSpot”, “Which tool should we buy this week?”',
+    },
+    {
+      label: 'Warm Leads',
+      value: analytics.warm_count,
+      icon: Thermometer,
+      accent: '#f97316',
+      tooltip: 'Score 70–89. Clear pain or interest, but not urgent yet. Typical examples: “Looking for alternatives”, “What’s a good CRM for a small team?”',
+    },
+    {
+      label: 'In Pipeline',
+      value: analytics.pushed_count,
+      icon: Send,
+      accent: '#10b981',
+      tooltip: 'Leads you already acted on. This number increases when you click “Push to Pipeline” (status becomes in_pipeline).',
+    },
   ];
 
   return (
@@ -188,7 +335,7 @@ const Dashboard = () => {
       {/* Page title */}
       <div>
         <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Dashboard</h1>
-        <p className="text-sm sm:text-base text-slate-500 mt-1">Scan social channels and capture high-intent buyers.</p>
+      <p className="text-sm sm:text-base text-slate-500 mt-1">Scan Reddit and capture high-intent buyers.</p>
       </div>
 
       {/* KPIs — 1 col → 2 col → 4 col */}
@@ -216,7 +363,7 @@ const Dashboard = () => {
                 <input
                   id="keyword-input"
                   type="text"
-                  placeholder="e.g. need CRM, voice AI, sales software..."
+                  placeholder="e.g. need CRM, sales process help, lead management..."
                   className="w-full pl-10 pr-4 py-3 sm:py-3.5 text-sm sm:text-base rounded-lg outline-none transition-all placeholder:text-slate-300"
                   style={{ border: '1px solid #e2e8f0', background: '#f8fafc', color: '#0f172a' }}
                   onFocus={e => e.target.style.borderColor = '#93c5fd'}
@@ -227,6 +374,28 @@ const Dashboard = () => {
                   disabled={isScanning}
                 />
               </div>
+
+              <div className="flex flex-wrap gap-2">
+                {keywordSuggestions.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    onClick={() => applySuggestion(suggestion)}
+                    className="px-3 py-1.5 rounded-full text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors"
+                    style={{ border: '1px solid #bfdbfe' }}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+
+              <p className="text-xs text-slate-400">
+                Try specific buyer-intent phrases so the Reddit scan finds people who may become clients.
+              </p>
+
+              <p className="text-xs text-slate-500">
+                Source: <span className="font-semibold text-slate-700">Reddit only</span>
+              </p>
 
               <button
                 id="run-scan-btn"
@@ -295,7 +464,7 @@ const Dashboard = () => {
                 <p className="text-xs sm:text-sm text-slate-300 mt-1">Run a scan to find buyers</p>
               </div>
             ) : (
-              leads.map(lead => <LeadFeedCard key={lead.id} lead={lead} />)
+              leads.map(lead => <LeadFeedCard key={lead.id} lead={lead} onDismiss={dismissLead} />)
             )}
           </div>
         </div>

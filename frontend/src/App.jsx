@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react
 import axios from 'axios'
 import Dashboard from './pages/Dashboard'
 import Pipeline from './pages/Pipeline'
-import VoiceAgent from './components/VoiceAgent'
 import { LayoutDashboard, Columns4, Zap, Menu, X } from 'lucide-react'
 
 const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000'
@@ -168,7 +167,6 @@ function App() {
           </main>
         </div>
 
-        <VoiceAgent />
       </div>
     </Router>
   )

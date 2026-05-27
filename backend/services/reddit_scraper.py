@@ -7,6 +7,16 @@ class RedditScraper:
     def __init__(self):
         self.base_url = "https://www.reddit.com/search.json"
         self.headers = {"User-Agent": "SocialPipe/1.0"}
+        self.stopwords = {
+            "a", "an", "the", "for", "to", "of", "and", "or", "in", "on", "with",
+            "best", "need", "looking", "recommend", "recommendation", "software",
+            "tool", "tools", "platform", "solution", "solutions",
+        }
+
+    def _keyword_tokens(self, keyword: str) -> List[str]:
+        tokens = re.findall(r"[a-z0-9]+", (keyword or "").lower())
+        filtered = [t for t in tokens if t not in self.stopwords and len(t) > 1]
+        return filtered or [t for t in tokens if len(t) > 1]
 
     def _matches_keywords(self, text: str, keywords: List[str]) -> List[str]:
         normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
@@ -15,8 +25,12 @@ class RedditScraper:
             kw_norm = re.sub(r"\s+", " ", (kw or "").lower()).strip()
             if not kw_norm:
                 continue
-            tokens = [t for t in re.split(r"\s+", kw_norm) if t]
-            if tokens and all(t in normalized for t in tokens):
+            tokens = self._keyword_tokens(kw_norm)
+            if not tokens:
+                continue
+            hits = sum(1 for t in tokens if t in normalized)
+            min_hits = 1 if len(tokens) == 1 else 2 if len(tokens) <= 3 else max(2, len(tokens) - 1)
+            if hits >= min_hits:
                 matched.append(kw)
         return matched
 

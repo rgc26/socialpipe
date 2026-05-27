@@ -25,6 +25,29 @@ class GeminiScorer:
         body = (post_obj.get("body") or "").strip()
         text = f"{title}\n{body}".lower()
 
+        promo_markers = [
+            "for hire", "hiring", "job opening", "free services", "portfolio",
+            "i built", "launching", "check out", "my app", "my product",
+            "top ", "best ", "list of", "companies", "agency", "development company", "development companies",
+            "guide", "blog", "article", "case study", "newsletter", "webinar", "tutorial", "demo", "free trial",
+        ]
+        buyer_markers = [
+            "i need", "we need", "my team", "our team", "looking for", "recommend", "any alternatives",
+            "switching from", "replace", "replacing", "vs", "compare", "comparison", "?",
+        ]
+        if any(m in text for m in promo_markers) and not any(m in text for m in buyer_markers):
+            return {
+                "signal_type": "no_signal",
+                "lead_score": 0,
+                "urgency": "low",
+                "company_hint": None,
+                "role_hint": None,
+                "pain_point": None,
+                "outreach_draft": None,
+                "recommended_action": "monitor",
+                "status": "discarded",
+            }
+
         dev_markers = [
             "stack trace", "traceback", "exception", "error:", "http 401", "http 403", "http 404", "http 500",
             "npm ", "pip ", "uvicorn", "fastapi", "react", "javascript", "typescript", "python", "api key",
@@ -35,6 +58,11 @@ class GeminiScorer:
             "replace", "replacing", "vs", "compare", "comparison", "what tool", "what software", "best tool",
             "need a", "need an", "need help choosing",
         ]
+        pain_markers = [
+            "struggling", "problem", "issue", "pain", "manual", "slow", "expensive", "frustrat",
+            "wasting time", "hard to manage", "hard to track", "missing leads", "can't keep up",
+            "not working", "broken", "inefficient", "mess", "spreadsheet",
+        ]
         category_markers = [
             "crm", "sales", "pipeline", "lead", "outreach", "dialer", "call", "cold email", "email outreach",
             "voice ai", "call ai", "sales ai", "contact tracking",
@@ -43,9 +71,14 @@ class GeminiScorer:
 
         has_intent = any(m in text for m in intent_markers) or ("need" in text) or ("looking" in text) or ("recommend" in text) or ("alternative" in text)
         has_category = any(m in text for m in category_markers)
+        has_pain = any(m in text for m in pain_markers)
         looks_dev = any(m in text for m in dev_markers) and not (has_intent and has_category)
 
-        if looks_dev or not (has_intent and has_category):
+        buyer_pronouns = [" i ", " we ", " our ", " my ", " our team ", " my team "]
+        has_buyer_voice = any(p in f" {text} " for p in buyer_pronouns)
+        has_ask = ("?" in text) or ("recommend" in text) or ("looking for" in text) or ("any alternatives" in text) or ("what tool" in text) or ("which tool" in text)
+
+        if looks_dev or not (has_category and (has_intent or has_pain)) or not (has_buyer_voice and (has_ask or has_pain or ("need " in text) or ("looking for" in text))):
             return {
                 "signal_type": "no_signal",
                 "lead_score": 0,
@@ -60,8 +93,21 @@ class GeminiScorer:
 
         competitor_names = ["hubspot", "salesforce", "pipedrive", "apollo", "close", "zoho", "zendesk", "freshsales"]
         competitor = next((c for c in competitor_names if c in text), None)
-        has_pain = ("too expensive" in text) or ("hate" in text) or ("frustrat" in text) or ("terrible" in text)
+        has_pain = has_pain or ("too expensive" in text) or ("hate" in text) or ("terrible" in text)
         is_urgent = any(m in text for m in urgent_markers)
+
+        if not has_buyer_voice:
+            return {
+                "signal_type": "no_signal",
+                "lead_score": 0,
+                "urgency": "low",
+                "company_hint": None,
+                "role_hint": None,
+                "pain_point": None,
+                "outreach_draft": None,
+                "recommended_action": "monitor",
+                "status": "discarded",
+            }
 
         if is_urgent:
             signal_type = "urgent_need"
@@ -74,6 +120,10 @@ class GeminiScorer:
         elif any(m in text for m in ["vs", "compare", "comparison", "alternative", "switching", "replace", "replacing"]):
             signal_type = "active_evaluation"
             score = 78
+            urgency = "medium"
+        elif has_pain:
+            signal_type = "advice_seeking"
+            score = 72
             urgency = "medium"
         else:
             signal_type = "product_request"

@@ -50,6 +50,7 @@ function LeadCard({ lead, onPush, expandedDrafts, onToggleDraft }) {
   const signal = SIGNAL_LABELS[lead.signal_type] || lead.signal_type || '—';
   const isOpen = expandedDrafts[lead.id];
   const sourceUrl = lead.source_url || lead.url;
+  const sourceHost = sourceUrl ? new URL(sourceUrl).hostname.replace(/^www\./, '') : null;
 
   return (
     <div
@@ -88,6 +89,11 @@ function LeadCard({ lead, onPush, expandedDrafts, onToggleDraft }) {
         {lead.pain_point || lead.content || '—'}
       </p>
 
+      <div className="mb-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500" style={{ border: '1px solid #e2e8f0' }}>
+        <div><span className="font-semibold text-slate-700">Source:</span> {plat.label}</div>
+        <div><span className="font-semibold text-slate-700">Matched From:</span> {sourceHost || `${plat.label} public post search`}</div>
+      </div>
+
       {lead.analysis_error && (
         <p className="text-xs text-rose-500 mb-3 line-clamp-2">
           AI: {lead.analysis_error}
@@ -111,13 +117,23 @@ function LeadCard({ lead, onPush, expandedDrafts, onToggleDraft }) {
 
       <div className="space-y-2">
         {lead.status !== 'in_pipeline' ? (
-          <button
-            id={`push-${lead.id}`}
-            onClick={() => onPush(lead.id)}
-            className="w-full py-2.5 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 flex items-center justify-center gap-2 transition-colors"
-          >
-            <Rocket size={13} /> Push to Pipeline
-          </button>
+          <div className="flex gap-2">
+            <button
+              id={`push-${lead.id}`}
+              onClick={() => onPush(lead.id)}
+              className="w-full py-2.5 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 flex items-center justify-center gap-2 transition-colors"
+            >
+              <Rocket size={13} /> Push to Pipeline
+            </button>
+            <button
+              type="button"
+              onClick={() => onPush(lead.id, { dismiss: true })}
+              className="px-3 py-2.5 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+              style={{ border: '1px solid #e2e8f0' }}
+            >
+              Not a Fit
+            </button>
+          </div>
         ) : (
           <div className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 text-emerald-600 bg-emerald-50 border border-emerald-100">
             <CheckCircle2 size={13} /> In Pipeline
@@ -167,14 +183,20 @@ const Pipeline = () => {
 
   useEffect(() => {
     fetchLeads(true);
-    const t = setInterval(() => fetchLeads(), 30000);
+    const t = setInterval(() => fetchLeads(), 15000);
     return () => clearInterval(t);
   }, [fetchLeads]);
 
   const toggleDraft    = (id) => setExpandedDrafts(p => ({ ...p, [id]: !p[id] }));
-  const pushToPipeline = async (leadId) => {
-    try { await axios.post(`${API_BASE_URL}/api/leads/${leadId}/push`); fetchLeads(); }
-    catch (e) { console.error(e); alert('Failed to push lead.'); }
+  const pushToPipeline = async (leadId, opts = {}) => {
+    try {
+      if (opts.dismiss) {
+        await axios.delete(`${API_BASE_URL}/api/leads/${leadId}`);
+      } else {
+        await axios.post(`${API_BASE_URL}/api/leads/${leadId}/push`);
+      }
+      fetchLeads();
+    } catch (e) { console.error(e); alert('Failed to update lead.'); }
   };
 
   return (
@@ -186,9 +208,14 @@ const Pipeline = () => {
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Sales Pipeline</h1>
           <p className="text-sm sm:text-base text-slate-500 mt-0.5">Review, qualify, and push leads to your CRM.</p>
         </div>
-        <div className="flex items-center gap-2 text-xs sm:text-sm font-medium text-slate-400 shrink-0">
-          <RefreshCw size={13} className={`text-blue-500 ${isLoading ? 'spin' : ''}`} />
-          Auto-refreshing every 30s
+        <div className="flex flex-wrap items-center justify-end gap-3 text-xs sm:text-sm font-medium text-slate-400 shrink-0">
+          <div className="flex items-center gap-2">
+            <RefreshCw size={13} className={`text-blue-500 ${isLoading ? 'spin' : ''}`} />
+            Auto-refreshing every 15s
+          </div>
+          <span className="text-slate-500">
+            Source: <span className="font-semibold text-slate-700">Reddit only</span>
+          </span>
         </div>
       </div>
 
